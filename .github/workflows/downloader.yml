@@ -1,88 +1,193 @@
-name: Strict YouTube Downloader (Stop on Error)
+name: YouTube Downloader - No Cookies
 
 on:
   workflow_dispatch:
     inputs:
       links_text:
-        description: '۱. متن حاوی لینک‌های یوتیوب را اینجا پیست کنید'
-        required: true
-        type: string
-      cookies_text:
-        description: '۲. کل متن داخل فایل cookies.txt را اینجا پیست کنید'
+        description: '۱. لینک‌های یوتیوب را وارد کنید (هر لینک در یک خط)'
         required: true
         type: string
 
 jobs:
   download-audio:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install ffmpeg
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y ffmpeg wget curl aria2
+        pip install --upgrade pip
+        pip install yt-dlp
 
-    - name: Install Latest yt-dlp
+    - name: Create directories and files
       run: |
-        sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
-        sudo chmod a+rx /usr/local/bin/yt-dlp
-
-    - name: Process Text and Download Audio
-      run: |
-        mkdir -p downloads
+        mkdir -p downloads logs
         
-        # ۱. ذخیره دقیق کوکی‌ها با حفظ ساختار متنی لینوکس
-        cat << 'EOF' > github_cookies.txt
-        ${{ github.event.inputs.cookies_text }}
-        EOF
-        
-        # ۲. ذخیره متن لینک‌ها
-        cat << 'EOF' > input_text.txt
+        # ذخیره لینک‌ها
+        cat << 'EOF' > links.txt
         ${{ github.event.inputs.links_text }}
         EOF
         
-        # ۳. فعال کردن حالت حساسیت به خطا در بش (set -e)
-        set -e
+        # تمیز کردن فایل از خطوط خالی
+        sed -i '/^[[:space:]]*$/d' links.txt
+        sed -i 's/^[[:space:]]*//;s/[[:space:]]*$//' links.txt
         
-        # ۴. استخراج لینک‌ها و دانلود مکرر
-        grep -o 'https://www.youtube.com/watch?v=[^[:space:]]*' input_text.txt | while read -r url; do
-          echo "------------------------------------------------------"
-          echo "Trying to download: $url"
-          echo "------------------------------------------------------"
-          
-          # اگر این دستور با خطا مواجه شود، به خاطر set -e کل اسکریپت و ورک‌فلو همانجا متوقف می‌شود
-          yt-dlp \
-            --cookies github_cookies.txt \
-            --impersonate "chrome" \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            --sleep-requests 2 \
-            --sleep-interval 5 \
-            -f "ba" \
-            --extract-audio \
-            --audio-format opus \
-            --ppa "ffmpeg:-b:a 24k -vbr off" \
-            -o "downloads/%(title)s.%(ext)s" \
-            "$url"
-            
-          # بررسی دستوری برای اطمینان از خروجی موفقیت‌آمیز هر لینک
-          if [ $? -ne 0 ]; then
-            echo "Error detected! Stopping execution."
-            exit 1
-          fi
-        done
+        echo "✅ فایل‌ها آماده شدند"
+        echo "📊 تعداد لینک‌ها:"
+        wc -l links.txt
 
-    - name: Zip Downloads
-      if: success() # تنها در صورتی زیپ میکند که همه دانلودها موفق بوده باشند
+    - name: Download YouTube audio
       run: |
-        zip -r compressed-audios.zip downloads/
+        TOTAL_LINKS=$(wc -l < links.txt)
+        CURRENT=0
+        FAILED=0
+        SUCCESS=0
+        FAILED_URLS=""
+        
+        echo "📥 شروع دانلود $TOTAL_LINKS لینک..."
+        echo "================================================"
+        
+        while IFS= read -r url; do
+          # تخطی از خطوط خالی
+          [[ -z "$url" ]] && continue
+          
+          # تخطی از لینک‌های غلط
+          if [[ ! "$url" =~ ^https://.*youtube ]]; then
+            echo "⚠️  لینک نامعتبر: $url"
+            continue
+          fi
+          
+          CURRENT=$((CURRENT + 1))
+          echo ""
+          echo "📌 [$CURRENT/$TOTAL_LINKS] درحال دانلود: $url"
+          echo "================================================"
+          
+          # تلاش برای دانلود با تعدادی retry
+          RETRY_COUNT=0
+          MAX_RETRIES=3
+          DOWNLOAD_SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$DOWNLOAD_SUCCESS" = false ]; do
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "🔄 تلاش $RETRY_COUNT از $MAX_RETRIES..."
+            
+            if yt-dlp \
+              --impersonate "chrome120" \
+              --extractor-args "youtube:player_client=web" \
+              --socket-timeout 30 \
+              --read-timeout 30 \
+              --retries 5 \
+              --fragment-retries 5 \
+              -f "ba/b" \
+              --extract-audio \
+              --audio-format opus \
+              --audio-quality 0 \
+              --ppa "ffmpeg:-b:a 32k" \
+              -o "downloads/%(title)s.%(ext)s" \
+              "$url" 2>&1 | tee -a logs/download.log; then
+              
+              SUCCESS=$((SUCCESS + 1))
+              echo "✅ موفق: $url"
+              DOWNLOAD_SUCCESS=true
+            else
+              EXIT_CODE=$?
+              echo "❌ تلاش ناموفق (کد: $EXIT_CODE)"
+              
+              if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                FAILED=$((FAILED + 1))
+                FAILED_URLS="$FAILED_URLS
+$url"
+                echo "❌ ناموفق بعد از $MAX_RETRIES تلاش: $url" | tee -a logs/errors.log
+              fi
+            fi
+          done
+          
+          # تاخیر بین درخواست‌ها
+          sleep 2
+        done < links.txt
+        
+        echo ""
+        echo "================================================"
+        echo "📊 خلاصه نتایج:"
+        echo "✅ موفق: $SUCCESS"
+        echo "❌ ناموفق: $FAILED"
+        echo "📦 کل: $TOTAL_LINKS"
+        echo "================================================"
+        
+        # نمایش لینک‌های ناموفق
+        if [ ! -z "$FAILED_URLS" ]; then
+          echo ""
+          echo "⚠️  لینک‌های ناموفق:"
+          echo "$FAILED_URLS"
+        fi
+        
+        # بررسی آیا حداقل یک فایل دانلود شده
+        FILE_COUNT=$(find downloads -type f 2>/dev/null | wc -l)
+        if [ $FILE_COUNT -eq 0 ]; then
+          echo "❌ هیچ فایلی دانلود نشد!"
+          cat logs/errors.log 2>/dev/null || echo "بدون جزئیات خطا"
+          exit 1
+        fi
+        
+        echo ""
+        echo "✅ $FILE_COUNT فایل دانلود شد"
 
-    - name: Upload Artifact
-      if: success() # تنها در صورت موفقیت فایل را آپلود میکند
+    - name: List downloaded files
+      if: always()
+      run: |
+        echo "📂 فایل‌های دانلود شده:"
+        ls -lh downloads/ 2>/dev/null || echo "هیچ فایلی یافت نشد"
+        echo ""
+        echo "📊 حجم کل:"
+        du -sh downloads/ 2>/dev/null || echo "0 bytes"
+        echo ""
+        echo "تعداد فایل‌ها:"
+        find downloads -type f 2>/dev/null | wc -l
+
+    - name: Create archive
+      if: success()
+      run: |
+        cd downloads
+        if [ $(ls -1 2>/dev/null | wc -l) -gt 0 ]; then
+          zip -r -j ../youtube-audios.zip . 2>/dev/null
+          cd ..
+          echo "✅ بایگانی ایجاد شد"
+          ls -lh youtube-audios.zip
+        else
+          echo "❌ فایلی برای zip کردن وجود ندارد"
+          exit 1
+        fi
+
+    - name: Upload artifact
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: youtube-audio-files
-        path: compressed-audios.zip
-        retention-days: 3
+        path: youtube-audios.zip
+        retention-days: 5
+
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: download-logs
+        path: logs/
+        retention-days: 2
+        if-no-files-found: ignore
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "🎉 Workflow تکمیل شد"
+        echo "📥 فایل‌ها در: Artifacts"
+        echo "📋 لاگ‌ها در: download-logs"
