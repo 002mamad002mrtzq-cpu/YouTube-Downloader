@@ -1,0 +1,59 @@
+name: Custom Text Links Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      links_text:
+        description: 'متن حاوی لینک‌ها را اینجا پیست کنید'
+        required: true
+        type: string
+
+jobs:
+  download-audio:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install ffmpeg
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+
+    - name: Install yt-dlp
+      run: |
+        sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
+        sudo chmod a+rx /usr/local/bin/yt-dlp
+
+    - name: Process Text and Download Audio
+      run: |
+        mkdir -p downloads
+        
+        # ذخیره متن ورودی در یک فایل موقت
+        cat << 'EOF' > input_text.txt
+        ${{ github.event.inputs.links_text }}
+        EOF
+        
+        # استخراج لینک‌ها و دانلود آن‌ها با تنظیمات فشرده‌سازی شدید
+        grep -o 'https://www.youtube.com/watch?v=[^[:space:]]*' input_text.txt | while read -r url; do
+          echo "Downloading: $url"
+          yt-dlp -i \
+            -f "ba" \
+            --extract-audio \
+            --audio-format opus \
+            --ppa "ffmpeg:-b:a 24k -vbr off" \
+            -o "downloads/%(title)s.%(ext)s" \
+            "$url" || echo "Failed to download $url"
+        done
+
+    - name: Zip Downloads
+      run: |
+        zip -r compressed-audios.zip downloads/
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: youtube-audio-files
+        path: compressed-audios.zip
+        retention-days: 3
