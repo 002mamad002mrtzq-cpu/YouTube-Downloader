@@ -1,4 +1,4 @@
-name: YouTube Audio Downloader (Two Inputs)
+name: YouTube Downloader with Browser Impersonate
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ffmpeg
 
-    - name: Install yt-dlp
+    - name: Install Latest yt-dlp
       run: |
         sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
         sudo chmod a+rx /usr/local/bin/yt-dlp
@@ -34,21 +34,24 @@ jobs:
       run: |
         mkdir -p downloads
         
-        # ۱. ذخیره متن کوکی ورودی با حفظ دقیق ساختار خطوط و فاصله‌ها
-        cat << 'EOF' > github_cookies.txt
-        ${{ github.event.inputs.cookies_text }}
-        EOF
+        # ۱. ذخیره کوکی‌ها
+        echo "${{ github.event.inputs.cookies_text }}" > github_cookies.txt
         
-        # ۲. ذخیره متن ورودی لینک‌ها
+        # ۲. ذخیره متن لینک‌ها
         cat << 'EOF' > input_text.txt
         ${{ github.event.inputs.links_text }}
         EOF
         
-        # ۳. استخراج لینک‌ها و دانلود با کوکی ورودی و فشرده‌سازی بسیار شدید (۱۰ مگابایت بر ساعت)
+        # ۳. دانلود با شبیه‌ساز مرورگر کروم، جعل هویت کلاینت و هدرهای فیک
         grep -o 'https://www.youtube.com/watch?v=[^[:space:]]*' input_text.txt | while read -r url; do
-          echo "Processing URL: $url"
+          echo "Processing URL with Impersonate: $url"
           yt-dlp -i \
             --cookies github_cookies.txt \
+            --impersonate "chrome" \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            --sc-proxy \
+            --sleep-requests 2 \
+            --sleep-interval 5 \
             -f "ba" \
             --extract-audio \
             --audio-format opus \
