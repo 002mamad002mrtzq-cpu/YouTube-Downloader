@@ -1,4 +1,4 @@
-name: YouTube Downloader with Browser Impersonate
+name: Strict YouTube Downloader (Stop on Error)
 
 on:
   workflow_dispatch:
@@ -34,22 +34,30 @@ jobs:
       run: |
         mkdir -p downloads
         
-        # ۱. ذخیره کوکی‌ها
-        echo "${{ github.event.inputs.cookies_text }}" > github_cookies.txt
+        # ۱. ذخیره دقیق کوکی‌ها با حفظ ساختار متنی لینوکس
+        cat << 'EOF' > github_cookies.txt
+        ${{ github.event.inputs.cookies_text }}
+        EOF
         
         # ۲. ذخیره متن لینک‌ها
         cat << 'EOF' > input_text.txt
         ${{ github.event.inputs.links_text }}
         EOF
         
-        # ۳. دانلود با شبیه‌ساز مرورگر کروم، جعل هویت کلاینت و هدرهای فیک
+        # ۳. فعال کردن حالت حساسیت به خطا در بش (set -e)
+        set -e
+        
+        # ۴. استخراج لینک‌ها و دانلود مکرر
         grep -o 'https://www.youtube.com/watch?v=[^[:space:]]*' input_text.txt | while read -r url; do
-          echo "Processing URL with Impersonate: $url"
-          yt-dlp -i \
+          echo "------------------------------------------------------"
+          echo "Trying to download: $url"
+          echo "------------------------------------------------------"
+          
+          # اگر این دستور با خطا مواجه شود، به خاطر set -e کل اسکریپت و ورک‌فلو همانجا متوقف می‌شود
+          yt-dlp \
             --cookies github_cookies.txt \
             --impersonate "chrome" \
             --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            --sc-proxy \
             --sleep-requests 2 \
             --sleep-interval 5 \
             -f "ba" \
@@ -57,14 +65,22 @@ jobs:
             --audio-format opus \
             --ppa "ffmpeg:-b:a 24k -vbr off" \
             -o "downloads/%(title)s.%(ext)s" \
-            "$url" || echo "Failed to download $url"
+            "$url"
+            
+          # بررسی دستوری برای اطمینان از خروجی موفقیت‌آمیز هر لینک
+          if [ $? -ne 0 ]; then
+            echo "Error detected! Stopping execution."
+            exit 1
+          fi
         done
 
     - name: Zip Downloads
+      if: success() # تنها در صورتی زیپ میکند که همه دانلودها موفق بوده باشند
       run: |
         zip -r compressed-audios.zip downloads/
 
     - name: Upload Artifact
+      if: success() # تنها در صورت موفقیت فایل را آپلود میکند
       uses: actions/upload-artifact@v4
       with:
         name: youtube-audio-files
