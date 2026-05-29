@@ -1,10 +1,14 @@
-name: Custom Text Links Downloader
+name: YouTube Audio Downloader (Two Inputs)
 
 on:
   workflow_dispatch:
     inputs:
       links_text:
-        description: 'متن حاوی لینک‌ها را اینجا پیست کنید'
+        description: '۱. متن حاوی لینک‌های یوتیوب را اینجا پیست کنید'
+        required: true
+        type: string
+      cookies_text:
+        description: '۲. کل متن داخل فایل cookies.txt را اینجا پیست کنید'
         required: true
         type: string
 
@@ -30,15 +34,21 @@ jobs:
       run: |
         mkdir -p downloads
         
-        # ذخیره متن ورودی در یک فایل موقت
+        # ۱. ذخیره متن کوکی ورودی با حفظ دقیق ساختار خطوط و فاصله‌ها
+        cat << 'EOF' > github_cookies.txt
+        ${{ github.event.inputs.cookies_text }}
+        EOF
+        
+        # ۲. ذخیره متن ورودی لینک‌ها
         cat << 'EOF' > input_text.txt
         ${{ github.event.inputs.links_text }}
         EOF
         
-        # استخراج لینک‌ها و دانلود آن‌ها با تنظیمات فشرده‌سازی شدید
+        # ۳. استخراج لینک‌ها و دانلود با کوکی ورودی و فشرده‌سازی بسیار شدید (۱۰ مگابایت بر ساعت)
         grep -o 'https://www.youtube.com/watch?v=[^[:space:]]*' input_text.txt | while read -r url; do
-          echo "Downloading: $url"
+          echo "Processing URL: $url"
           yt-dlp -i \
+            --cookies github_cookies.txt \
             -f "ba" \
             --extract-audio \
             --audio-format opus \
